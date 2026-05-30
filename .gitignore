@@ -1,0 +1,21 @@
+# Node.js dependencies
+node_modules/
+
+# macOS system files
+.DS_Store
+
+# Environment files (never commit secrets)
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test scripts (contains temp URLs)
+test_xhs_parse.js
+
+# Downloaded video files
+*.mp4
+*.mp3

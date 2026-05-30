@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DYLoader | 抖音与小红书无水印视频下载器</title>
+  <meta name="description" content="一个极简、精美、极速的抖音与小红书视频无水印在线下载工具，支持视频与音频提取。">
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- FontAwesome for Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Core Stylesheet -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Decorative background elements -->
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="logo-icon">
+          <i class="fa-brands fa-tiktok"></i>
+        </div>
+        <h1 class="logo-title">DY<span>Loader</span></h1>
+      </div>
+      <p class="logo-subtitle">极简精美的抖音 / 小红书无水印视频下载工具</p>
+    </header>
+
+    <!-- Main Content -->
+    <main class="app-main">
+      <!-- Input Panel -->
+      <section class="input-section card">
+        <div class="input-wrapper">
+          <i class="fa-solid fa-link input-icon"></i>
+          <input 
+            type="text" 
+            id="url-input" 
+            placeholder="请在此粘贴抖音或小红书分享链接（支持 v.douyin.com / xhslink.com 短链）"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <button id="clear-btn" class="clear-btn" title="清空内容" style="display: none;">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <button id="extract-btn" class="primary-btn">
+          <span class="btn-text">提取并解析</span>
+          <span class="btn-loader" style="display: none;">
+            <i class="fa-solid fa-circle-notch fa-spin"></i>
+          </span>
+        </button>
+      </section>
+
+      <!-- Skeleton Loading State (Hidden by default) -->
+      <section id="skeleton-loader" class="skeleton-card card" style="display: none;">
+        <div class="skeleton-left">
+          <div class="skeleton-item skeleton-cover"></div>
+        </div>
+        <div class="skeleton-right">
+          <div class="skeleton-row header-row">
+            <div class="skeleton-item skeleton-avatar"></div>
+            <div class="skeleton-item skeleton-text width-40"></div>
+          </div>
+          <div class="skeleton-item skeleton-text width-100"></div>
+          <div class="skeleton-item skeleton-text width-80"></div>
+          <div class="skeleton-row stats-row">
+            <div class="skeleton-item skeleton-stat"></div>
+            <div class="skeleton-item skeleton-stat"></div>
+            <div class="skeleton-item skeleton-stat"></div>
+          </div>
+          <div class="skeleton-item skeleton-btn"></div>
+          <div class="skeleton-item skeleton-btn secondary"></div>
+        </div>
+      </section>
+
+      <!-- Results Preview Card (Hidden by default) -->
+      <section id="result-card" class="result-card card" style="display: none;">
+        <div class="result-left">
+          <div class="video-preview-wrapper">
+            <img id="video-cover" src="" alt="视频封面">
+            <div class="play-overlay">
+              <i class="fa-solid fa-circle-play"></i>
+            </div>
+          </div>
+        </div>
+        <div class="result-right">
+          <!-- Author Info -->
+          <div class="author-info">
+            <img id="author-avatar" src="" alt="作者头像">
+            <span id="author-name">作者昵称</span>
+          </div>
+
+          <!-- Video Desc -->
+          <h2 id="video-title" class="video-title">视频标题信息</h2>
+          
+          <!-- Quality Badge -->
+          <div class="badge-wrapper">
+            <span class="badge" id="video-quality"><i class="fa-solid fa-sliders"></i> 画质: Original</span>
+          </div>
+
+          <!-- Statistics -->
+          <div class="stats-container">
+            <div class="stat-badge" title="点赞数">
+              <i class="fa-solid fa-heart icon-like"></i>
+              <span id="stat-likes">0</span>
+            </div>
+            <div class="stat-badge" title="评论数">
+              <i class="fa-solid fa-comment icon-comment"></i>
+              <span id="stat-comments">0</span>
+            </div>
+            <div class="stat-badge" title="收藏数">
+              <i class="fa-solid fa-star icon-collect"></i>
+              <span id="stat-collects">0</span>
+            </div>
+            <div class="stat-badge" title="分享数">
+              <i class="fa-solid fa-share icon-share"></i>
+              <span id="stat-shares">0</span>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="action-buttons">
+            <a id="download-video-btn" href="#" class="action-btn download-btn">
+              <i class="fa-solid fa-arrow-down-long"></i>
+              <span>下载无水印视频 (MP4)</span>
+            </a>
+            <a id="download-audio-btn" href="#" class="action-btn audio-btn">
+              <i class="fa-solid fa-music"></i>
+              <span>提取原声背景音乐 (MP3)</span>
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p>© 2026 DYLoader. 仅供学习交流使用，请勿用于商业用途。</p>
+      <p class="developed-by">Designed & Crafted with <i class="fa-solid fa-heart"></i></p>
+    </footer>
+  </div>
+
+  <!-- Toast Notification System -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Core JavaScript -->
+  <script src="app.js"></script>
+</body>
+</html>
