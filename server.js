@@ -59,122 +59,234 @@ app.post('/api/parse', async (req, res) => {
       let cover = '';
       let likes = 0, comments = 0, shares = 0, collects = 0;
 
-      // Method 1: Try litchi-ai API (free)
+      // Method 0: Try public video parsing API
       try {
-        console.log('Trying litchi-ai API...');
-        const litchiRes = await axios.post('https://api.litchi-ai.com/api/video/parse', 
+        console.log('Trying public video parsing API...');
+        const parseApiUrl = 'https://api.tikmate.app/api/parse';
+        const parseRes = await axios.post(parseApiUrl, 
           { url: resolvedUrl },
           {
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer free-demo-key'
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             },
-            timeout: 15000
+            timeout: 20000
           }
         );
 
-        if (litchiRes.data && litchiRes.data.success && litchiRes.data.video_url) {
-          videoUrl = litchiRes.data.video_url;
-          title = litchiRes.data.title || '';
-          cover = litchiRes.data.cover_url || '';
-          desc = litchiRes.data.description || '';
-          console.log('litchi-ai API success!');
+        if (parseRes.data && parseRes.data.video_url) {
+          videoUrl = parseRes.data.video_url;
+          title = parseRes.data.title || '';
+          cover = parseRes.data.cover || parseRes.data.thumbnail || '';
+          nickname = parseRes.data.author || parseRes.data.username || '小红书作者';
+          console.log('Public API success!');
         }
       } catch (e) {
-        console.log('litchi-ai API failed:', e.message);
+        console.log('Public API failed:', e.message);
       }
 
-      // Method 2: Try parsing HTML page if API failed
-      if (!videoUrl) {
-        console.log('Trying HTML parsing...');
+      // Method 1: Try xhslink short URL to get real URL with xsec_token
+      let xsecToken = '';
+      let realNoteId = noteId;
+      
+      // Extract xsec_token from URL if present
+      const xsecMatch = resolvedUrl.match(/xsec_token=([^&]+)/);
+      if (xsecMatch) {
+        xsecToken = xsecMatch[1];
+        console.log('Found xsec_token:', xsecToken);
+      }
+
+      // Method 1.5: Try xiaohongshu web API with xsec_token
+      if (xsecToken) {
         try {
-          const htmlResponse = await axios.get(resolvedUrl, {
+          console.log('Trying xiaohongshu web API...');
+          const webApiUrl = `https://www.xiaohongshu.com/api/sns/web/v1/feed?source_note_id=${noteId}&xsec_token=${xsecToken}&xsec_source=pc_share`;
+          
+          const webApiRes = await axios.get(webApiUrl, {
             headers: {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-              'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-              'Cache-Control': 'no-cache',
-              'Pragma': 'no-cache'
+              'Accept': 'application/json, text/plain, */*',
+              'Accept-Language': 'zh-CN,zh;q=0.9',
+              'Referer': 'https://www.xiaohongshu.com/',
+              'Origin': 'https://www.xiaohongshu.com',
+              'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120"',
+              'Sec-Ch-Ua-Mobile': '?0',
+              'Sec-Ch-Ua-Platform': '"Windows"',
+              'Sec-Fetch-Dest': 'empty',
+              'Sec-Fetch-Mode': 'cors',
+              'Sec-Fetch-Site': 'same-origin'
             },
             timeout: 15000
           });
 
-          const html = htmlResponse.data;
+          if (webApiRes.data && webApiRes.data.data && webApiRes.data.data.items) {
+            const items = webApiRes.data.data.items;
+            if (items.length > 0) {
+              const noteCard = items[0].noteCard;
+              if (noteCard) {
+                title = noteCard.displayTitle || '';
+                desc = noteCard.desc || '';
+                nickname = noteCard.user?.nickname || '小红书作者';
+                avatar = noteCard.user?.avatar || '';
+                likes = noteCard.interactInfo?.likedCount || 0;
+                comments = noteCard.interactInfo?.commentCount || 0;
+                shares = noteCard.interactInfo?.shareCount || 0;
+                collects = noteCard.interactInfo?.collectCount || 0;
+                cover = noteCard.imageList?.[0]?.urlDefault || '';
+                
+                // Extract video URL
+                if (noteCard.video && noteCard.video.media) {
+                  const media = noteCard.video.media;
+                  if (media.stream) {
+                    const h264 = media.stream.h264 || [];
+                    const h265 = media.stream.h265 || [];
+                    if (h264.length > 0) {
+                      // Sort by quality
+                      const sorted = [...h264].sort((a, b) => (b.qualityType || 0) - (a.qualityType || 0));
+                      videoUrl = sorted[0].masterUrl || '';
+                    } else if (h265.length > 0) {
+                      videoUrl = h265[0].masterUrl || '';
+                    }
+                  }
+                }
+                
+                console.log('Web API success! videoUrl:', videoUrl ? 'found' : 'not found');
+              }
+            }
+          }
+        } catch (e) {
+          console.log('Web API failed:', e.message);
+        }
+      }
 
-          // Try to find video URL in HTML with various patterns
+      // Method 2: Try HTML page fetch with mobile UA
+      try {
+        console.log('Trying HTML page fetch with mobile UA...');
+        const htmlResponse = await axios.get(resolvedUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 MicroMessenger/8.0.38(2480) NetType/WIFI Language/zh_CN Process/app',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Cache-Control': 'max-age=0',
+            'Upgrade-Insecure-Requests': '1'
+          },
+          timeout: 15000,
+          decompress: true
+        });
+
+        const html = htmlResponse.data;
+        console.log('HTML response received, length:', html.length);
+
+        // Try to find __INITIAL_STATE__ in HTML
+        const stateMatch = html.match(/window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?})\s*(?:<\/script>|$)/);
+        if (stateMatch) {
+          console.log('Found __INITIAL_STATE__');
+          try {
+            // Clean up the JSON string
+            let jsonStr = stateMatch[1]
+              .replace(/undefined/g, 'null')
+              .replace(/\\u002F/g, '/');
+            
+            // Balance braces
+            let braceCount = 0;
+            let endIndex = 0;
+            for (let i = 0; i < jsonStr.length; i++) {
+              if (jsonStr[i] === '{') braceCount++;
+              else if (jsonStr[i] === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                  endIndex = i + 1;
+                  break;
+                }
+              }
+            }
+            jsonStr = jsonStr.slice(0, endIndex);
+            
+            const stateData = JSON.parse(jsonStr);
+            const noteDetailMap = stateData?.note?.noteDetailMap || {};
+            const noteIds = Object.keys(noteDetailMap);
+            
+            if (noteIds.length > 0) {
+              const noteInfo = noteDetailMap[noteIds[0]]?.note;
+              if (noteInfo) {
+                title = noteInfo.title || '';
+                desc = noteInfo.desc || '';
+                nickname = noteInfo.user?.nickname || '小红书作者';
+                avatar = noteInfo.user?.avatar || '';
+                cover = noteInfo.imageList?.[0]?.urlDefault || noteInfo.imageList?.[0]?.url || '';
+                likes = noteInfo.interactInfo?.likedCount || 0;
+                comments = noteInfo.interactInfo?.commentCount || 0;
+                shares = noteInfo.interactInfo?.shareCount || 0;
+                collects = noteInfo.interactInfo?.collectCount || 0;
+                
+                // Extract video URL
+                const video = noteInfo.video || {};
+                if (video.stream) {
+                  const h264 = video.stream.h264 || [];
+                  const h265 = video.stream.h265 || [];
+                  if (h264.length > 0) {
+                    videoUrl = h264[0].masterUrl || h264[0].master_url || '';
+                  } else if (h265.length > 0) {
+                    videoUrl = h265[0].masterUrl || h265[0].master_url || '';
+                  }
+                }
+                
+                // Fallback: mediaV2
+                if (!videoUrl && video.mediaV2) {
+                  try {
+                    const mediaV2 = JSON.parse(video.mediaV2);
+                    videoUrl = mediaV2.video?.opaque1?.default_screencast_stream || 
+                               mediaV2.video?.opaque1?.hd_screencast_stream || '';
+                  } catch (e) {}
+                }
+                
+                console.log('Parsed from __INITIAL_STATE__, videoUrl:', videoUrl ? 'found' : 'not found');
+              }
+            }
+          } catch (e) {
+            console.log('JSON parse error:', e.message);
+          }
+        }
+
+        // Fallback: search for video URL patterns in HTML
+        if (!videoUrl) {
           const patterns = [
             /"masterUrl"\s*:\s*"([^"]+)"/,
             /"master_url"\s*:\s*"([^"]+)"/,
-            /"streamUrl"\s*:\s*"([^"]+)"/,
-            /https?:\/\/[^"'\s]+sns-video[^"'\s]+\.mp4[^"'\s]*/,
-            /https?:\/\/[^"'\s]+xhscdn[^"'\s]+\.mp4[^"'\s]*/
+            /https?:\/\/[^"'\s<>]+sns-video[^"'\s<>]+\.mp4[^"'\s<>]*/,
+            /https?:\/\/[^"'\s<>]+xhscdn[^"'\s<>]+stream[^"'\s<>]+/
           ];
-
+          
           for (const pattern of patterns) {
             const match = html.match(pattern);
             if (match) {
-              videoUrl = match[0].replace(/\\u002F/g, '/').replace(/\\/g, '');
-              if (videoUrl.startsWith('"')) videoUrl = videoUrl.slice(1);
-              if (videoUrl.endsWith('"')) videoUrl = videoUrl.slice(0, -1);
-              console.log('Found video URL via pattern:', pattern.toString().slice(0, 30));
+              videoUrl = match[1] || match[0];
+              videoUrl = videoUrl.replace(/\\u002F/g, '/').replace(/\\/g, '');
+              console.log('Found video URL via pattern');
               break;
             }
           }
+        }
 
-          // Extract title
+        // Extract title if not found
+        if (!title) {
           const titleMatch = html.match(/<title>([^<]+)<\/title>/);
           if (titleMatch) {
             title = titleMatch[1].replace(' - 小红书', '').trim();
           }
-
-          // Extract description
-          const descMatch = html.match(/<meta\s+name="description"\s+content="([^"]+)"/);
-          if (descMatch) {
-            desc = descMatch[1];
-          }
-
-          if (!title && desc) {
-            title = desc.slice(0, 50);
-          }
-
-          // Extract cover
-          const coverPatterns = [
-            /"url"\s*:\s*"(https?:\/\/[^"]+sns-webpic[^"]+)"/,
-            /"urlDefault"\s*:\s*"(https?:\/\/[^"]+)"/,
-            /https?:\/\/[^"'\s]+sns-webpic[^"'\s]+/
-          ];
-          for (const pattern of coverPatterns) {
-            const match = html.match(pattern);
-            if (match) {
-              cover = match[0].replace(/\\u002F/g, '/').replace(/\\/g, '');
-              if (cover.startsWith('"')) cover = cover.slice(1);
-              if (cover.endsWith('"')) cover = cover.slice(0, -1);
-              break;
-            }
-          }
-
-          // Extract nickname
-          const nicknameMatch = html.match(/"nickname"\s*:\s*"([^"]+)"/);
-          if (nicknameMatch) {
-            nickname = nicknameMatch[1].replace(/\\u002F/g, '/');
-          }
-
-          // Extract statistics
-          const likesMatch = html.match(/"likedCount"\s*:\s*(\d+)/);
-          if (likesMatch) likes = parseInt(likesMatch[1]);
-          
-          const commentsMatch = html.match(/"commentCount"\s*:\s*(\d+)/);
-          if (commentsMatch) comments = parseInt(commentsMatch[1]);
-
-          const collectsMatch = html.match(/"collectedCount"\s*:\s*(\d+)/);
-          if (collectsMatch) collects = parseInt(collectsMatch[1]);
-
-          const shareMatch = html.match(/"shareCount"\s*:\s*(\d+)/);
-          if (shareMatch) shares = parseInt(shareMatch[1]);
-
-        } catch (e) {
-          console.log('HTML parsing failed:', e.message);
         }
+
+        // Extract cover if not found
+        if (!cover) {
+          const coverMatch = html.match(/https?:\/\/[^"'\s<>]+sns-webpic[^"'\s<>]+/);
+          if (coverMatch) {
+            cover = coverMatch[0].replace(/\\u002F/g, '/');
+          }
+        }
+
+      } catch (e) {
+        console.log('HTML fetch failed:', e.message);
       }
 
       // Method 3: Construct direct video URL if we have noteId
@@ -223,7 +335,15 @@ app.post('/api/parse', async (req, res) => {
       if (!videoUrl) {
         console.log('All parsing methods failed for XHS');
         return res.status(500).json({ 
-          error: '小红书视频解析失败。小红书有严格的反爬虫机制，建议：1) 使用小红书App内的"保存到本地"功能（如果作者开启了）；2) 使用第三方小程序工具如"耶斯去水印"；3) 尝试其他视频链接。' 
+          error: '小红书视频解析失败',
+          detail: '小红书有严格的反爬虫机制，服务器端无法直接获取视频。请尝试以下方法：',
+          solutions: [
+            '1. 使用小红书App内的"保存到本地"功能（如果作者开启了下载权限）',
+            '2. 使用微信小程序工具如"耶斯去水印"、"大佬去水印"等',
+            '3. 使用浏览器开发者工具手动抓取视频链接',
+            '4. 尝试抖音视频链接（抖音解析成功率更高）'
+          ],
+          platform: 'xiaohongshu'
         });
       }
 
