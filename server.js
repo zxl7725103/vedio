@@ -51,94 +51,154 @@ app.post('/api/parse', async (req, res) => {
 
       const html = response.data;
 
-      // Extract Video URL via scanning method
+      // Extract Video details from window.__INITIAL_STATE__
       let videoUrl = '';
-      let index = html.indexOf('sns-video');
-      while (index !== -1) {
-        let start = index;
-        while (start > 0 && !/[\s"'>]/.test(html[start])) {
-          start--;
-        }
-        start++;
-        let end = index;
-        while (end < html.length && !/[\s"'>\\]/.test(html[end])) {
-          end++;
-        }
-        const rawUrl = html.slice(start, end);
-        if (rawUrl.includes('.mp4')) {
-          videoUrl = rawUrl.replace(/\\u002F/g, '/').replace(/\\/g, '');
-          if (!videoUrl.startsWith('http') && videoUrl.startsWith('//')) {
-            videoUrl = 'https:' + videoUrl;
-          }
-          break;
-        }
-        index = html.indexOf('sns-video', index + 1);
-      }
-
-      if (!videoUrl) {
-        return res.status(404).json({ error: '未在该小红书页面中找到视频文件。该笔记可能是纯图文，或受防盗链保护。' });
-      }
-
-      // Extract Title
       let title = '';
-      const titleRegex = /<title>(.*?)<\/title>/i;
-      const titleMatch = html.match(titleRegex);
-      if (titleMatch) {
-        title = titleMatch[1].replace(' - 小红书', '').trim();
+      let desc = '';
+      let nickname = '小红书作者';
+      let avatar = '';
+      let cover = '';
+
+      // Try parsing the structured state JSON
+      try {
+        const stateRegex = /window\.__INITIAL_STATE__\s*=\s*({.*?})<\/script>/s;
+        const match = html.match(stateRegex);
+        if (match) {
+          // Balance curly braces to get valid JSON block
+          const rawStr = match[1].replace(/undefined/g, 'null');
+          let count = 0;
+          let parsedJsonStr = '';
+          for (let i = 0; i < rawStr.length; i++) {
+            const char = rawStr[i];
+            if (char === '{') count++;
+            else if (char === '}') count--;
+            parsedJsonStr += char;
+            if (count === 0 && i > 0) break;
+          }
+          const stateData = JSON.parse(parsedJsonStr);
+          const noteDetailMap = stateData.note?.noteDetailMap || {};
+          const noteIds = Object.keys(noteDetailMap);
+          if (noteIds.length > 0) {
+            const noteInfo = noteDetailMap[noteIds[0]].note;
+            title = noteInfo.title || '';
+            desc = noteInfo.desc || '';
+            
+            // Video extraction
+            const videoInfo = noteInfo.video || {};
+            // Try h264 streams
+            const h264Streams = videoInfo.stream?.h264 || [];
+            if (h264Streams.length > 0) {
+              videoUrl = h264Streams[0].masterUrl || h264Streams[0].master_url || '';
+            }
+            // Fallback to mediaV2 screencast streams
+            if (!videoUrl && videoInfo.mediaV2) {
+              try {
+                const mediaV2Data = JSON.parse(videoInfo.mediaV2);
+                videoUrl = mediaV2Data.video?.opaque1?.default_screencast_stream || 
+                           mediaV2Data.video?.opaque1?.hd_screencast_stream || '';
+              } catch (e) {
+                console.error('Error parsing mediaV2:', e);
+              }
+            }
+
+            // Cover Image
+            cover = noteInfo.imageList?.[0]?.url || noteInfo.imageList?.[0]?.urlDefault || '';
+
+            // Author details
+            nickname = noteInfo.user?.nickname || nickname;
+            avatar = noteInfo.user?.avatar || '';
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing INITIAL_STATE JSON:', e.message);
       }
 
-      // Extract Description
-      let desc = '';
-      const descRegex = /<meta\s+name="description"\s+content="(.*?)"/i;
-      const descMatch = html.match(descRegex);
-      if (descMatch) {
-        desc = descMatch[1];
+      // --- FALLBACKS IF JSON PARSING FAILED OR FIELDS EMPTY ---
+      if (!videoUrl) {
+        // Fallback video URL scanning
+        let index = html.indexOf('sns-video');
+        while (index !== -1) {
+          let start = index;
+          while (start > 0 && !/[\s"'>]/.test(html[start])) {
+            start--;
+          }
+          start++;
+          let end = index;
+          while (end < html.length && !/[\s"'>\\]/.test(html[end])) {
+            end++;
+          }
+          const rawUrl = html.slice(start, end);
+          if (rawUrl.includes('.mp4')) {
+            videoUrl = rawUrl.replace(/\\u002F/g, '/').replace(/\\/g, '');
+            if (!videoUrl.startsWith('http') && videoUrl.startsWith('//')) {
+              videoUrl = 'https:' + videoUrl;
+            }
+            break;
+          }
+          index = html.indexOf('sns-video', index + 1);
+        }
+      }
+
+      if (!title) {
+        const titleRegex = /<title>(.*?)<\/title>/i;
+        const titleMatch = html.match(titleRegex);
+        if (titleMatch) {
+          title = titleMatch[1].replace(' - 小红书', '').trim();
+        }
+      }
+
+      if (!desc) {
+        const descRegex = /<meta\s+name="description"\s+content="(.*?)"/i;
+        const descMatch = html.match(descRegex);
+        if (descMatch) {
+          desc = descMatch[1];
+        }
       }
       if (!title && desc) {
         title = desc.slice(0, 50);
       }
 
-      // Extract Author Nickname
-      let nickname = '小红书作者';
-      const nicknameRegex = /"nickname"\s*:\s*"(.*?)"/i;
-      const nicknameMatch = html.match(nicknameRegex);
-      if (nicknameMatch) {
-        nickname = nicknameMatch[1].replace(/\\u002F/g, '/');
-      }
-
-      // Extract Author Avatar
-      let avatar = '';
-      const avatarRegex = /"avatar"\s*:\s*"(.*?)"/i;
-      const avatarMatch = html.match(avatarRegex);
-      if (avatarMatch) {
-        avatar = avatarMatch[1].replace(/\\u002F/g, '/').replace(/\\/g, '');
-        if (!avatar.startsWith('http') && avatar.startsWith('//')) {
-          avatar = 'https:' + avatar;
+      if (nickname === '小红书作者') {
+        const nicknameRegex = /"nickname"\s*:\s*"(.*?)"/i;
+        const nicknameMatch = html.match(nicknameRegex);
+        if (nicknameMatch) {
+          nickname = nicknameMatch[1].replace(/\\u002F/g, '/');
         }
       }
 
-      // Extract Cover Image URL
-      let cover = '';
-      let coverIndex = html.indexOf('sns-webpic');
-      while (coverIndex !== -1) {
-        let start = coverIndex;
-        while (start > 0 && !/[\s"'>]/.test(html[start])) {
-          start--;
-        }
-        start++;
-        let end = coverIndex;
-        while (end < html.length && !/[\s"'>\\]/.test(html[end])) {
-          end++;
-        }
-        const rawUrl = html.slice(start, end);
-        if (rawUrl.includes('!nd_')) {
-          cover = rawUrl.replace(/\\u002F/g, '/').replace(/\\/g, '');
-          if (!cover.startsWith('http') && cover.startsWith('//')) {
-            cover = 'https:' + cover;
+      if (!avatar) {
+        const avatarRegex = /"avatar"\s*:\s*"(.*?)"/i;
+        const avatarMatch = html.match(avatarRegex);
+        if (avatarMatch) {
+          avatar = avatarMatch[1].replace(/\\u002F/g, '/').replace(/\\/g, '');
+          if (!avatar.startsWith('http') && avatar.startsWith('//')) {
+            avatar = 'https:' + avatar;
           }
-          break;
         }
-        coverIndex = html.indexOf('sns-webpic', coverIndex + 1);
+      }
+
+      if (!cover) {
+        let coverIndex = html.indexOf('sns-webpic');
+        while (coverIndex !== -1) {
+          let start = coverIndex;
+          while (start > 0 && !/[\s"'>]/.test(html[start])) {
+            start--;
+          }
+          start++;
+          let end = coverIndex;
+          while (end < html.length && !/[\s"'>\\]/.test(html[end])) {
+            end++;
+          }
+          const rawUrl = html.slice(start, end);
+          if (rawUrl.includes('!nd_')) {
+            cover = rawUrl.replace(/\\u002F/g, '/').replace(/\\/g, '');
+            if (!cover.startsWith('http') && cover.startsWith('//')) {
+              cover = 'https:' + cover;
+            }
+            break;
+          }
+          coverIndex = html.indexOf('sns-webpic', coverIndex + 1);
+        }
       }
 
       // Extract Likes, Comments, Collects, Shares
