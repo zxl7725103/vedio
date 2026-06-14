@@ -40,180 +40,166 @@ app.post('/api/parse', async (req, res) => {
 
     if (resolvedUrl.includes('xiaohongshu.com')) {
       // --- XIAOHONGSHU PARSING LOGIC ---
-      const response = await axios.get(resolvedUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
-        },
-        timeout: 15000
-      });
+      // Extract note ID from URL
+      const noteIdMatch = resolvedUrl.match(/\/explore\/([a-zA-Z0-9]+)/);
+      const noteId = noteIdMatch ? noteIdMatch[1] : null;
 
-      const html = response.data;
+      if (!noteId) {
+        return res.status(400).json({ error: '无法从小红书链接中提取笔记ID' });
+      }
 
-      // Extract Video details from window.__INITIAL_STATE__
+      console.log(`Extracted note ID: ${noteId}`);
+
+      // Try multiple parsing methods
       let videoUrl = '';
       let title = '';
       let desc = '';
       let nickname = '小红书作者';
       let avatar = '';
       let cover = '';
+      let likes = 0, comments = 0, shares = 0, collects = 0;
 
-      // Try parsing the structured state JSON
+      // Method 1: Try litchi-ai API (free)
       try {
-        const stateRegex = /window\.__INITIAL_STATE__\s*=\s*({.*?})<\/script>/s;
-        const match = html.match(stateRegex);
-        if (match) {
-          // Balance curly braces to get valid JSON block
-          const rawStr = match[1].replace(/undefined/g, 'null');
-          let count = 0;
-          let parsedJsonStr = '';
-          for (let i = 0; i < rawStr.length; i++) {
-            const char = rawStr[i];
-            if (char === '{') count++;
-            else if (char === '}') count--;
-            parsedJsonStr += char;
-            if (count === 0 && i > 0) break;
+        console.log('Trying litchi-ai API...');
+        const litchiRes = await axios.post('https://api.litchi-ai.com/api/video/parse', 
+          { url: resolvedUrl },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer free-demo-key'
+            },
+            timeout: 15000
           }
-          const stateData = JSON.parse(parsedJsonStr);
-          const noteDetailMap = stateData.note?.noteDetailMap || {};
-          const noteIds = Object.keys(noteDetailMap);
-          if (noteIds.length > 0) {
-            const noteInfo = noteDetailMap[noteIds[0]].note;
-            title = noteInfo.title || '';
-            desc = noteInfo.desc || '';
-            
-            // Video extraction
-            const videoInfo = noteInfo.video || {};
-            // Try h264 streams
-            const h264Streams = videoInfo.stream?.h264 || [];
-            if (h264Streams.length > 0) {
-              videoUrl = h264Streams[0].masterUrl || h264Streams[0].master_url || '';
-            }
-            // Fallback to mediaV2 screencast streams
-            if (!videoUrl && videoInfo.mediaV2) {
-              try {
-                const mediaV2Data = JSON.parse(videoInfo.mediaV2);
-                videoUrl = mediaV2Data.video?.opaque1?.default_screencast_stream || 
-                           mediaV2Data.video?.opaque1?.hd_screencast_stream || '';
-              } catch (e) {
-                console.error('Error parsing mediaV2:', e);
-              }
-            }
+        );
 
-            // Cover Image
-            cover = noteInfo.imageList?.[0]?.url || noteInfo.imageList?.[0]?.urlDefault || '';
-
-            // Author details
-            nickname = noteInfo.user?.nickname || nickname;
-            avatar = noteInfo.user?.avatar || '';
-          }
+        if (litchiRes.data && litchiRes.data.success && litchiRes.data.video_url) {
+          videoUrl = litchiRes.data.video_url;
+          title = litchiRes.data.title || '';
+          cover = litchiRes.data.cover_url || '';
+          desc = litchiRes.data.description || '';
+          console.log('litchi-ai API success!');
         }
       } catch (e) {
-        console.error('Error parsing INITIAL_STATE JSON:', e.message);
+        console.log('litchi-ai API failed:', e.message);
       }
 
-      // --- FALLBACKS IF JSON PARSING FAILED OR FIELDS EMPTY ---
+      // Method 2: Try parsing HTML page if API failed
       if (!videoUrl) {
-        // Fallback video URL scanning
-        let index = html.indexOf('sns-video');
-        while (index !== -1) {
-          let start = index;
-          while (start > 0 && !/[\s"'>]/.test(html[start])) {
-            start--;
-          }
-          start++;
-          let end = index;
-          while (end < html.length && !/[\s"'>\\]/.test(html[end])) {
-            end++;
-          }
-          const rawUrl = html.slice(start, end);
-          if (rawUrl.includes('.mp4')) {
-            videoUrl = rawUrl.replace(/\\u002F/g, '/').replace(/\\/g, '');
-            if (!videoUrl.startsWith('http') && videoUrl.startsWith('//')) {
-              videoUrl = 'https:' + videoUrl;
+        console.log('Trying HTML parsing...');
+        try {
+          const htmlResponse = await axios.get(resolvedUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+              'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
+            },
+            timeout: 15000
+          });
+
+          const html = htmlResponse.data;
+
+          // Try to find video URL in HTML with various patterns
+          const patterns = [
+            /"masterUrl"\s*:\s*"([^"]+)"/,
+            /"master_url"\s*:\s*"([^"]+)"/,
+            /"streamUrl"\s*:\s*"([^"]+)"/,
+            /https?:\/\/[^"'\s]+sns-video[^"'\s]+\.mp4[^"'\s]*/,
+            /https?:\/\/[^"'\s]+xhscdn[^"'\s]+\.mp4[^"'\s]*/
+          ];
+
+          for (const pattern of patterns) {
+            const match = html.match(pattern);
+            if (match) {
+              videoUrl = match[0].replace(/\\u002F/g, '/').replace(/\\/g, '');
+              if (videoUrl.startsWith('"')) videoUrl = videoUrl.slice(1);
+              if (videoUrl.endsWith('"')) videoUrl = videoUrl.slice(0, -1);
+              console.log('Found video URL via pattern:', pattern.toString().slice(0, 30));
+              break;
             }
-            break;
           }
-          index = html.indexOf('sns-video', index + 1);
-        }
-      }
 
-      if (!title) {
-        const titleRegex = /<title>(.*?)<\/title>/i;
-        const titleMatch = html.match(titleRegex);
-        if (titleMatch) {
-          title = titleMatch[1].replace(' - 小红书', '').trim();
-        }
-      }
-
-      if (!desc) {
-        const descRegex = /<meta\s+name="description"\s+content="(.*?)"/i;
-        const descMatch = html.match(descRegex);
-        if (descMatch) {
-          desc = descMatch[1];
-        }
-      }
-      if (!title && desc) {
-        title = desc.slice(0, 50);
-      }
-
-      if (nickname === '小红书作者') {
-        const nicknameRegex = /"nickname"\s*:\s*"(.*?)"/i;
-        const nicknameMatch = html.match(nicknameRegex);
-        if (nicknameMatch) {
-          nickname = nicknameMatch[1].replace(/\\u002F/g, '/');
-        }
-      }
-
-      if (!avatar) {
-        const avatarRegex = /"avatar"\s*:\s*"(.*?)"/i;
-        const avatarMatch = html.match(avatarRegex);
-        if (avatarMatch) {
-          avatar = avatarMatch[1].replace(/\\u002F/g, '/').replace(/\\/g, '');
-          if (!avatar.startsWith('http') && avatar.startsWith('//')) {
-            avatar = 'https:' + avatar;
+          // Extract title
+          const titleMatch = html.match(/<title>([^<]+)<\/title>/);
+          if (titleMatch) {
+            title = titleMatch[1].replace(' - 小红书', '').trim();
           }
-        }
-      }
 
-      if (!cover) {
-        let coverIndex = html.indexOf('sns-webpic');
-        while (coverIndex !== -1) {
-          let start = coverIndex;
-          while (start > 0 && !/[\s"'>]/.test(html[start])) {
-            start--;
+          // Extract description
+          const descMatch = html.match(/<meta\s+name="description"\s+content="([^"]+)"/);
+          if (descMatch) {
+            desc = descMatch[1];
           }
-          start++;
-          let end = coverIndex;
-          while (end < html.length && !/[\s"'>\\]/.test(html[end])) {
-            end++;
+
+          if (!title && desc) {
+            title = desc.slice(0, 50);
           }
-          const rawUrl = html.slice(start, end);
-          if (rawUrl.includes('!nd_')) {
-            cover = rawUrl.replace(/\\u002F/g, '/').replace(/\\/g, '');
-            if (!cover.startsWith('http') && cover.startsWith('//')) {
-              cover = 'https:' + cover;
+
+          // Extract cover
+          const coverPatterns = [
+            /"url"\s*:\s*"(https?:\/\/[^"]+sns-webpic[^"]+)"/,
+            /"urlDefault"\s*:\s*"(https?:\/\/[^"]+)"/,
+            /https?:\/\/[^"'\s]+sns-webpic[^"'\s]+/
+          ];
+          for (const pattern of coverPatterns) {
+            const match = html.match(pattern);
+            if (match) {
+              cover = match[0].replace(/\\u002F/g, '/').replace(/\\/g, '');
+              if (cover.startsWith('"')) cover = cover.slice(1);
+              if (cover.endsWith('"')) cover = cover.slice(0, -1);
+              break;
             }
-            break;
           }
-          coverIndex = html.indexOf('sns-webpic', coverIndex + 1);
+
+          // Extract nickname
+          const nicknameMatch = html.match(/"nickname"\s*:\s*"([^"]+)"/);
+          if (nicknameMatch) {
+            nickname = nicknameMatch[1].replace(/\\u002F/g, '/');
+          }
+
+          // Extract statistics
+          const likesMatch = html.match(/"likedCount"\s*:\s*(\d+)/);
+          if (likesMatch) likes = parseInt(likesMatch[1]);
+          
+          const commentsMatch = html.match(/"commentCount"\s*:\s*(\d+)/);
+          if (commentsMatch) comments = parseInt(commentsMatch[1]);
+
+          const collectsMatch = html.match(/"collectedCount"\s*:\s*(\d+)/);
+          if (collectsMatch) collects = parseInt(collectsMatch[1]);
+
+          const shareMatch = html.match(/"shareCount"\s*:\s*(\d+)/);
+          if (shareMatch) shares = parseInt(shareMatch[1]);
+
+        } catch (e) {
+          console.log('HTML parsing failed:', e.message);
         }
       }
 
-      // Extract Likes, Comments, Collects, Shares
-      let likes = 0, comments = 0, shares = 0, collects = 0;
-      const likesMatch = html.match(/"likedCount"\s*:\s*"(\d+)"/i) || html.match(/"likedCount"\s*:\s*(\d+)/i);
-      if (likesMatch) likes = parseInt(likesMatch[1]);
-      
-      const commentsMatch = html.match(/"commentCount"\s*:\s*"(\d+)"/i) || html.match(/"commentCount"\s*:\s*(\d+)/i);
-      if (commentsMatch) comments = parseInt(commentsMatch[1]);
-
-      const collectsMatch = html.match(/"collectedCount"\s*:\s*"(\d+)"/i) || html.match(/"collectedCount"\s*:\s*(\d+)/i);
-      if (collectsMatch) collects = parseInt(collectsMatch[1]);
-
-      const shareMatch = html.match(/"shareCount"\s*:\s*"(\d+)"/i) || html.match(/"shareCount"\s*:\s*(\d+)/i);
-      if (shareMatch) shares = parseInt(shareMatch[1]);
+      // Method 3: Construct direct video URL if we have noteId
+      if (!videoUrl && noteId) {
+        console.log('Trying direct URL construction...');
+        // Try common video CDN patterns
+        const possibleUrls = [
+          `https://sns-video-qc.xhscdn.com/${noteId}.mp4`,
+          `https://sns-video-al.xhscdn.com/${noteId}.mp4`,
+          `https://sns-video-hw.xhscdn.com/${noteId}.mp4`
+        ];
+        
+        for (const testUrl of possibleUrls) {
+          try {
+            const testRes = await axios.head(testUrl, { timeout: 5000 });
+            if (testRes.status === 200) {
+              videoUrl = testUrl;
+              console.log('Direct URL construction success!');
+              break;
+            }
+          } catch (e) {
+            // URL doesn't exist, continue
+          }
+        }
+      }
 
       const responseData = {
         title: title || desc || '小红书视频',
@@ -229,10 +215,17 @@ app.post('/api/parse', async (req, res) => {
           collects
         },
         video_url: videoUrl,
-        audio_url: '', // No separate audio extraction for XHS
+        audio_url: '',
         quality: 'Original',
         platform: 'xiaohongshu'
       };
+
+      if (!videoUrl) {
+        console.log('All parsing methods failed for XHS');
+        return res.status(500).json({ 
+          error: '小红书视频解析失败。小红书有严格的反爬虫机制，建议：1) 使用小红书App内的"保存到本地"功能（如果作者开启了）；2) 使用第三方小程序工具如"耶斯去水印"；3) 尝试其他视频链接。' 
+        });
+      }
 
       return res.json(responseData);
 
